@@ -15,6 +15,14 @@ export default function HomePage() {
     setIsLoading(true)
     setLoadingAction("start")
 
+    // Clear localStorage before starting new chat
+    try {
+      localStorage.removeItem("thread_id")
+      localStorage.removeItem("chat_messages")
+    } catch (e) {
+      // ignore
+    }
+
     await new Promise((resolve) => setTimeout(resolve, 1500))
 
     router.push("/start-chat")

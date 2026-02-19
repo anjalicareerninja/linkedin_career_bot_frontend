@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from "react"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -15,6 +15,7 @@ interface Message {
   content: string
   role: "user" | "assistant"
   timestamp: Date
+  isStreaming?: boolean
 }
 
 interface MarketInsight {
@@ -23,6 +24,7 @@ interface MarketInsight {
 }
 
 export default function StartChatPage() {
+  const [isInitializing, setIsInitializing] = useState(true)
   const [currentView, setCurrentView] = useState<"input" | "loading" | "chat">("input")
   const [linkedinUrl, setLinkedinUrl] = useState("")
   const [messages, setMessages] = useState<Message[]>([])
@@ -30,20 +32,86 @@ export default function StartChatPage() {
   const [isLoading, setIsLoading] = useState(false)
   const [isTyping, setIsTyping] = useState(false)
   const [threadId, setThreadId] = useState<string | null>(null)
+  const [suggestedActions, setSuggestedActions] = useState<string[]>([])
   const [healthStatus, setHealthStatus] = useState<"healthy" | "error" | "checking">("healthy")
-  const scrollAreaRef = useRef<HTMLDivElement>(null)
+  const [profileName, setProfileName] = useState<string | null>(null)
+  const [pendingAction, setPendingAction] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const router = useRouter()
 
+  // On mount, restore session from localStorage if exists
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+    try {
+      const storedThreadId = localStorage.getItem("thread_id")
+      const storedMessages = localStorage.getItem("chat_messages")
+      
+      if (storedThreadId && storedMessages) {
+        // Restore the session
+        setThreadId(storedThreadId)
+        const parsed = JSON.parse(storedMessages)
+        const messagesWithDates = parsed.map((msg: any) => ({
+          ...msg,
+          timestamp: new Date(msg.timestamp)
+        }))
+        setMessages(messagesWithDates)
+        setCurrentView("chat")
+      }
+    } catch (e) {
+      // If restore fails, stay on input view
+    } finally {
+      setIsInitializing(false)
+    }
+  }, [])
+
+  // Save messages to localStorage whenever they change
+  useEffect(() => {
+    if (messages.length > 0) {
+      try {
+        localStorage.setItem("chat_messages", JSON.stringify(messages))
+      } catch (e) {
+        // ignore storage errors
+      }
+    }
+  }, [messages])
+
+  useEffect(() => {
+    // Only scroll to bottom if user is near the bottom to prevent jarring scrolling
+    const main = document.querySelector('main')
+    if (main) {
+      const isNearBottom = main.scrollTop + main.clientHeight >= main.scrollHeight - 100
+      if (isNearBottom) {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+      }
+    }
   }, [messages, isTyping])
+
+  // Fetch actual profile name from database
+  useEffect(() => {
+    const fetchProfileName = async () => {
+      if (threadId) {
+        try {
+          const response = await fetch(`/api/profile/${threadId}`)
+          if (response.ok) {
+            const profileData = await response.json()
+            if (profileData.profile_data && profileData.profile_data.name) {
+              setProfileName(profileData.profile_data.name)
+            }
+          }
+        } catch (error) {
+          console.error("Failed to fetch profile name:", error)
+        }
+      }
+    }
+    
+    fetchProfileName()
+  }, [threadId])
 
   const startSession = async () => {
     if (!linkedinUrl.trim()) return
 
     setCurrentView("loading")
     setIsLoading(true)
+
     try {
       const response = await fetch("/api/start-chat", {
         method: "POST",
@@ -54,16 +122,24 @@ export default function StartChatPage() {
       if (response.ok) {
         const data = await response.json()
         setThreadId(data.thread_id)
+        try {
+          localStorage.setItem("thread_id", data.thread_id)
+        } catch (e) {
+          // ignore storage errors
+        }
 
         const firstMessage: Message = {
           id: Date.now().toString(),
-          content:
-            data.message ||
-            "I've analyzed your LinkedIn profile! Let me help you create a personalized career plan. What specific career goals are you looking to achieve?",
+          content: "Hi! I'm from Learntube.ai. Your profile analysis is complete. Please select an option below or type a message to begin.",
           role: "assistant",
           timestamp: new Date(),
         }
         setMessages([firstMessage])
+        setSuggestedActions([
+          "How do I level up my career?",
+          "Enhance my full profile for its flaws",
+          "Do a job fit analysis",
+        ])
         setCurrentView("chat")
       }
     } catch (error) {
@@ -74,45 +150,109 @@ export default function StartChatPage() {
     }
   }
 
-  const sendMessage = async () => {
-    if (!currentMessage.trim() || !threadId) return
-
+  const submitMessage = async (message: string) => {
+    if (!message.trim() || !threadId) return
+  
     const userMessage: Message = {
       id: Date.now().toString(),
-      content: currentMessage,
+      content: message,
       role: "user",
       timestamp: new Date(),
     }
-
+  
     setMessages((prev) => [...prev, userMessage])
-    const messageToSend = currentMessage
-    setCurrentMessage("")
+    setSuggestedActions([])
     setIsTyping(true)
-
+  
+    // Placeholder for streaming AI response
+    const aiId = `${Date.now()}-ai`
+    
+  
     try {
-      const response = await fetch("/api/resume-chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          thread_id: threadId,
-          message: messageToSend,
-        }),
-      })
-
-      if (response.ok) {
-        const data = await response.json()
-        const formattedMessages: Message[] = data.chat_history.map((msg: any, index: number) => ({
-          id: `${Date.now()}-${index}`,
-          content: msg.content,
-          role: msg.role,
-          timestamp: new Date(),
-        }))
-        setMessages(formattedMessages)
+      const response = await fetch(
+        `/api/resume-chat?thread_id=${encodeURIComponent(threadId)}&message=${encodeURIComponent(message)}`,
+        {
+          method: "GET",
+          headers: { "Accept": "text/event-stream" },
+        }
+      )
+  
+      const reader = response.body?.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ""
+  
+      while (true) {
+        const { done, value } = await reader!.read()
+        if (done) break
+  
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split("\n\n")
+        buffer = lines.pop() || ""
+  
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const data = JSON.parse(line.slice(6))
+            
+            if (data.type === 'start') {
+              setIsTyping(false)
+              // Create AI message when streaming starts
+              setMessages((prev) => [...prev, {
+                id: aiId,
+                content: "",
+                role: "assistant",
+                timestamp: new Date(),
+                isStreaming: true,
+              }])
+            } else if (data.content) {
+              setMessages((prev) =>
+                prev.map((m) => m.id === aiId ? { ...m, content: data.content } : m)
+              )
+            } else if (data.done) {
+              setMessages((prev) =>
+                prev.map((m) => m.id === aiId ? { ...m, isStreaming: false } : m)
+              )
+              break
+            }
+          }
+        }
       }
     } catch (error) {
-      console.error("Failed to send message:", error)
+      console.error("Stream error:", error)
     } finally {
       setIsTyping(false)
+    }
+  }
+
+
+  const sendMessage = () => {
+    if (pendingAction) {
+      const combinedMessage = `${pendingAction}: ${currentMessage}`
+      submitMessage(combinedMessage)
+      setPendingAction(null)
+    } else {
+      submitMessage(currentMessage)
+    }
+    setCurrentMessage("")
+  }
+
+  const handleSuggestedActionClick = (action: string) => {
+    const multiStepActions: { [key: string]: string } = {
+      "Do a job fit analysis":
+        "Certainly. Please provide the job description you'd like me to analyze.",
+    }
+
+    if (multiStepActions[action]) {
+      setPendingAction(action)
+      const followUpMessage: Message = {
+        id: Date.now().toString(),
+        content: multiStepActions[action],
+        role: "assistant",
+        timestamp: new Date(),
+      }
+      setMessages((prev) => [...prev, followUpMessage])
+      setSuggestedActions([])
+    } else {
+      submitMessage(action)
     }
   }
 
@@ -126,9 +266,16 @@ export default function StartChatPage() {
     } catch (error) {
       console.error("Failed to end session:", error)
     } finally {
+      try {
+        localStorage.removeItem("thread_id")
+        localStorage.removeItem("chat_messages")
+      } catch (e) {
+        // ignore storage errors
+      }
       setThreadId(null)
       setMessages([])
-      router.push("/")
+      setLinkedinUrl("")
+      setCurrentView("input")
     }
   }
 
@@ -165,20 +312,24 @@ export default function StartChatPage() {
   }
 
   const TypingIndicator = () => (
-    <div className="flex items-start space-x-3 max-w-[80%]">
-      <div className="w-8 h-8 rounded-full bg-card flex items-center justify-center shadow-sm">
-        <Bot className="h-4 w-4 text-card-foreground" />
-      </div>
-      <div className="bg-card rounded-lg p-4 shadow-sm border border-border flex items-center space-x-2">
-        <div className="flex space-x-1">
-          <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-          <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-          <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+    <div className="flex justify-start mb-4">
+      <div className="max-w-[85%]">
+        <div className="rounded-2xl px-4 py-2 flex items-center space-x-2" style={{ backgroundColor: '#35628e' }}>
+          <div className="flex space-x-1">
+            <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+            <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+            <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+          </div>
+          <span className="text-sm text-white">AI is typing...</span>
         </div>
-        <span className="text-sm text-secondary-foreground">AI is typing...</span>
       </div>
     </div>
   )
+
+  // Show nothing while checking localStorage to prevent flash
+  if (isInitializing) {
+    return null
+  }
 
   if (currentView === "loading") {
     return (
@@ -242,13 +393,13 @@ export default function StartChatPage() {
                 <label htmlFor="linkedin" className="text-sm font-semibold text-card-foreground block">
                   LinkedIn Profile URL
                 </label>
-                <Input
+                <input
                   id="linkedin"
                   placeholder="https://linkedin.com/in/yourprofile"
                   value={linkedinUrl}
-                  onChange={(e) => setLinkedinUrl(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && startSession()}
-                  className="h-12 text-base bg-input border-2 border-border focus:border-primary transition-colors text-card-foreground placeholder:text-muted-foreground"
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setLinkedinUrl(e.target.value)}
+                  onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === "Enter" && startSession()}
+                  className="h-12 text-base bg-input border-2 border-border focus:border-primary transition-colors text-card-foreground placeholder:text-muted-foreground w-full rounded-md px-3"
                 />
               </div>
               <Button
@@ -276,57 +427,43 @@ export default function StartChatPage() {
   }
 
   return (
-    <div className="min-h-screen bg-learntube-gradient">
-      <div className="max-w-4xl mx-auto h-screen flex flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-border">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 bg-primary rounded-full flex items-center justify-center">
-              <Sparkles className="h-5 w-5 text-white" />
+    <div className="flex flex-col h-screen text-white overflow-hidden" style={{ backgroundColor: '#003153' }}>
+      {/* Mobile-Optimized Header */}
+      <header className="sticky top-0 z-10 px-3 py-2 mobile-ui" style={{ backgroundColor: '#003153' }}>
+        <div className="flex items-center justify-between w-full">
+          {/* Left side - Profile info */}
+          <div className="flex items-center space-x-2 flex-1 min-w-0">
+            <div className="w-8 h-8 bg-primary rounded-full flex items-center justify-center flex-shrink-0">
+              <Sparkles className="h-4 w-4 text-white" />
             </div>
-            <div>
-              <h1 className="text-xl font-bold text-foreground">AI Career Assistant</h1>
-              <p className="text-sm text-muted-foreground">Personalized career guidance</p>
+            <div className="min-w-0 flex-1">
+              <h1 className="text-sm font-bold text-foreground truncate">
+                {profileName || "AI Career Assistant"}
+              </h1>
+              <p className="text-xs text-muted-foreground">Personalized career guidance</p>
             </div>
           </div>
 
-          <div className="flex items-center space-x-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={checkHealth}
-              disabled={healthStatus === "checking"}
-              className="bg-card border-border text-card-foreground hover:bg-card/80"
-            >
-              {healthStatus === "checking" ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Activity className="mr-2 h-4 w-4" />
-              )}
-              Health
-              <Badge
-                variant={healthStatus === "healthy" ? "default" : "destructive"}
-                className="ml-2 bg-primary text-primary-foreground"
-              >
-                {healthStatus === "checking" ? "..." : healthStatus}
-              </Badge>
-            </Button>
-
+          {/* Right side - Action buttons */}
+          <div className="flex items-center space-x-1 flex-shrink-0">
             <Button
               variant="outline"
               size="sm"
               onClick={endSession}
-              className="bg-card border-border text-card-foreground hover:bg-destructive/20 hover:border-destructive"
+              className="border-white/20 text-white hover:bg-white/10 h-8 px-2"
+              style={{ backgroundColor: '#35628e' }}
             >
-              <LogOut className="mr-2 h-4 w-4" />
-              End Session
+              <LogOut className="h-3 w-3" />
+              <span className="ml-1 text-xs">End</span>
             </Button>
           </div>
         </div>
+      </header>
 
-        {/* Chat Messages */}
-        <ScrollArea className="flex-1 p-6" ref={scrollAreaRef}>
-          <div className="space-y-6">
+      {/* Chat Messages */}
+      <main className="flex-1 overflow-y-auto relative" style={{ backgroundColor: '#003153' }}>
+        <div className="max-w-4xl px-3 py-4 mx-auto">
+          <div className="space-y-3 pb-4">
             {messages.map((message) => {
               const { content, insights } =
                 message.role === "assistant"
@@ -335,74 +472,37 @@ export default function StartChatPage() {
 
               return (
                 <div key={message.id}>
-                  <div className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
-                    <div
-                      className={`flex items-start space-x-3 max-w-[80%] ${message.role === "user" ? "flex-row-reverse space-x-reverse" : ""}`}
-                    >
-                      <div
-                        className={`w-8 h-8 rounded-full flex items-center justify-center shadow-sm ${
-                          message.role === "user"
-                            ? "bg-primary text-primary-foreground"
-                            : "bg-card text-card-foreground"
-                        }`}
-                      >
-                        {message.role === "user" ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
-                      </div>
-                      <div
-                        className={`rounded-lg p-4 shadow-sm ${
-                          message.role === "user"
-                            ? "bg-primary text-primary-foreground"
-                            : "bg-card text-card-foreground border border-border"
-                        }`}
-                      >
-                        <div className="prose prose-sm max-w-none">
-                          {message.role === "user" ? (
-                            <p className="mb-0 leading-relaxed">{content}</p>
-                          ) : (
-                            <ReactMarkdown
-                              className="prose prose-sm max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
-                              components={{
-                                h1: ({ children }) => (
-                                  <h1 className="text-lg font-bold mb-2 text-card-foreground">{children}</h1>
-                                ),
-                                h2: ({ children }) => (
-                                  <h2 className="text-base font-semibold mb-2 text-card-foreground">{children}</h2>
-                                ),
-                                h3: ({ children }) => (
-                                  <h3 className="text-sm font-semibold mb-1 text-card-foreground">{children}</h3>
-                                ),
-                                p: ({ children }) => (
-                                  <p className="mb-2 last:mb-0 leading-relaxed text-secondary-foreground">{children}</p>
-                                ),
-                                ul: ({ children }) => <ul className="mb-2 last:mb-0 pl-4 space-y-1">{children}</ul>,
-                                li: ({ children }) => <li className="text-secondary-foreground">{children}</li>,
-                                a: ({ children, href }) => (
-                                  <a
-                                    href={href}
-                                    className="text-primary hover:underline"
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                  >
-                                    {children}
-                                  </a>
-                                ),
-                                strong: ({ children }) => (
-                                  <strong className="font-semibold text-card-foreground">{children}</strong>
-                                ),
-                              }}
-                            >
-                              {content}
-                            </ReactMarkdown>
-                          )}
-                        </div>
-                        <div
-                          className={`text-xs mt-2 ${message.role === "user" ? "text-primary-foreground/70" : "text-muted-foreground"}`}
-                        >
-                          {message.timestamp.toLocaleTimeString()}
+                  {message.role === "user" ? (
+                    <div className="flex justify-end mb-4">
+                      <div className="max-w-[85%]">
+                        <div className="rounded-2xl px-4 py-2 shadow-sm break-words max-w-full overflow-hidden bg-user-message text-white">
+                          <div className="text-base leading-relaxed max-w-full overflow-wrap-anywhere">
+                            <p className="mb-0 leading-relaxed text-base">{content}</p>
+                          </div>
+                          <div className="text-xs mt-1 text-white/70">
+                            {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
+                  ) : (
+                    <div className="mb-4">
+                      <div className="text-base leading-relaxed max-w-full overflow-wrap-anywhere">
+                        <div className="prose prose-base max-w-none text-white text-justify">
+                          <ReactMarkdown
+                            components={{
+                              p: ({ node, ...props }) => <p className="mb-4" {...props} />,
+                            }}
+                          >
+                            {content}
+                          </ReactMarkdown>
+                        </div>
+                      </div>
+                       <div className="text-xs mt-1 text-white/70">
+                        {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </div>
+                    </div>
+                  )}
 
                   {insights.length > 0 && (
                     <div className="mt-4 ml-11">
@@ -437,32 +537,82 @@ export default function StartChatPage() {
               )
             })}
 
+            {suggestedActions.length > 0 && (
+              <div className="flex flex-col items-start gap-2 mb-4">
+                {suggestedActions.map((action, index) => (
+                  <Button
+                    key={index}
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleSuggestedActionClick(action)}
+                    className="bg-muted hover:bg-muted/80 border-muted text-foreground h-auto py-2 px-3 text-sm rounded-xl"
+                  >
+                    <span className="font-normal">{action}</span>
+                  </Button>
+                ))}
+              </div>
+            )}
+
             {isTyping && <TypingIndicator />}
             <div ref={messagesEndRef} />
           </div>
-        </ScrollArea>
+        </div>
+      </main>
 
-        {/* Message Input */}
-        <div className="p-4 border-t border-border">
-          <div className="flex space-x-3">
-            <Input
-              placeholder="Ask about your career path, skills, or opportunities..."
+      {/* Message Input */}
+      <footer className="sticky bottom-0 p-1 mobile-ui" style={{ backgroundColor: '#003153' }}>
+        <div className="max-w-4xl mx-auto">
+          <div className="flex items-end space-x-2">
+            <Textarea
+              placeholder="Explore roles, skills, or growth..."
               value={currentMessage}
-              onChange={(e) => setCurrentMessage(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendMessage()}
+              onChange={(e) => {
+                setCurrentMessage(e.target.value)
+                // Auto-resize
+                const target = e.target as HTMLTextAreaElement
+                target.style.height = "auto"
+                target.style.height = `${Math.min(target.scrollHeight, 120)}px`
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault()
+                  sendMessage()
+                  // Reset height after sending
+                  setTimeout(() => {
+                    const target = e.target as HTMLTextAreaElement
+                    target.style.height = "auto"
+                  }, 0)
+                }
+              }}
               disabled={isTyping}
-              className="flex-1 h-12 bg-input border-2 border-border focus:border-primary text-card-foreground placeholder:text-muted-foreground"
+              className="flex-1 border border-white/20 rounded-2xl focus-visible:ring-0 focus-visible:ring-offset-0 text-white placeholder:text-white/70 resize-none text-sm leading-relaxed p-3 outline-none"
+              style={{ backgroundColor: '#35628e', minHeight: "20px", maxHeight: "120px" }}
+              rows={1}
             />
             <Button
-              onClick={sendMessage}
+              onClick={() => {
+                sendMessage()
+                // Reset height after sending
+                setTimeout(() => {
+                  const textarea = document.querySelector('textarea') as HTMLTextAreaElement
+                  if (textarea) {
+                    textarea.style.height = "auto"
+                  }
+                }, 0)
+              }}
               disabled={!currentMessage.trim() || isTyping}
-              className="h-12 px-6 bg-primary hover:bg-primary/90 text-primary-foreground border-0 shadow-lg"
+              className="h-8 w-8 p-0 rounded-full hover:bg-white/30 text-white shadow-sm flex-shrink-0"
+              style={{ backgroundColor: '#35628e !important' }}
             >
-              <Send className="h-4 w-4" />
+              <Send className="w-3 h-3" />
+              <span className="sr-only">Send Message</span>
             </Button>
           </div>
+          <div className="text-center mt-2">
+            <p className="text-xs text-white/60">By LearnTube.ai</p>
+          </div>
         </div>
-      </div>
+      </footer>
     </div>
   )
 }

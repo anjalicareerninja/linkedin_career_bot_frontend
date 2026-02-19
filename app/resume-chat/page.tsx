@@ -34,6 +34,47 @@ export default function ResumeChatPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const router = useRouter()
 
+  // On load, restore thread_id and messages from localStorage
+  useEffect(() => {
+    try {
+      const storedThreadId = typeof window !== "undefined" ? localStorage.getItem("thread_id") : null
+      const storedMessages = typeof window !== "undefined" ? localStorage.getItem("chat_messages") : null
+      
+      if (storedThreadId && storedThreadId.trim()) {
+        setThreadId(storedThreadId)
+        
+        // Restore messages if available
+        if (storedMessages) {
+          const parsed = JSON.parse(storedMessages)
+          // Convert timestamp strings back to Date objects
+          const messagesWithDates = parsed.map((msg: any) => ({
+            ...msg,
+            timestamp: new Date(msg.timestamp)
+          }))
+          setMessages(messagesWithDates)
+        }
+        
+        setCurrentView("chat")
+      } else {
+        // No stored thread, redirect to start-chat as per requirements
+        router.push("/start-chat")
+      }
+    } catch (e) {
+      router.push("/start-chat")
+    }
+  }, [router])
+
+  // Save messages to localStorage whenever they change
+  useEffect(() => {
+    if (messages.length > 0) {
+      try {
+        localStorage.setItem("chat_messages", JSON.stringify(messages))
+      } catch (e) {
+        // ignore storage errors
+      }
+    }
+  }, [messages])
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [messages, isTyping])
@@ -65,7 +106,15 @@ export default function ResumeChatPage() {
   }
 
   const sendMessage = async () => {
-    if (!currentMessage.trim() || !threadId) return
+    const storedThreadId = (() => {
+      try {
+        return typeof window !== "undefined" ? localStorage.getItem("thread_id") || "" : ""
+      } catch (e) {
+        return ""
+      }
+    })()
+
+    if (!currentMessage.trim() || !storedThreadId) return
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -84,7 +133,7 @@ export default function ResumeChatPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          thread_id: threadId,
+          thread_id: storedThreadId,
           message: messageToSend,
         }),
       })
@@ -107,15 +156,28 @@ export default function ResumeChatPage() {
   }
 
   const endSession = async () => {
-    if (!threadId) return
+    const storedThreadId = (() => {
+      try {
+        return typeof window !== "undefined" ? localStorage.getItem("thread_id") || "" : ""
+      } catch (e) {
+        return ""
+      }
+    })()
+    if (!storedThreadId) return
 
     try {
-      await fetch(`/api/chat/${threadId}`, {
+      await fetch(`/api/chat/${storedThreadId}`, {
         method: "DELETE",
       })
     } catch (error) {
       console.error("Failed to end session:", error)
     } finally {
+      try {
+        localStorage.removeItem("thread_id")
+        localStorage.removeItem("chat_messages")
+      } catch (e) {
+        // ignore storage errors
+      }
       setMessages([])
       router.push("/")
     }
@@ -154,17 +216,16 @@ export default function ResumeChatPage() {
   }
 
   const TypingIndicator = () => (
-    <div className="flex items-start space-x-3 max-w-[80%]">
-      <div className="w-8 h-8 rounded-full bg-card flex items-center justify-center shadow-sm">
-        <Bot className="h-4 w-4 text-card-foreground" />
-      </div>
-      <div className="bg-card rounded-lg p-4 shadow-sm border border-border flex items-center space-x-2">
-        <div className="flex space-x-1">
-          <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-          <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-          <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+    <div className="flex justify-start">
+      <div className="max-w-[80%]">
+        <div className="bg-card rounded-lg p-4 shadow-sm border border-border flex items-center space-x-2">
+          <div className="flex space-x-1">
+            <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+            <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+            <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+          </div>
+          <span className="text-sm text-secondary-foreground">AI is typing...</span>
         </div>
-        <span className="text-sm text-secondary-foreground">AI is typing...</span>
       </div>
     </div>
   )
@@ -250,32 +311,11 @@ export default function ResumeChatPage() {
             <Button
               variant="outline"
               size="sm"
-              onClick={checkHealth}
-              disabled={healthStatus === "checking"}
-              className="bg-card border-border text-card-foreground hover:bg-card/80"
-            >
-              {healthStatus === "checking" ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Activity className="mr-2 h-4 w-4" />
-              )}
-              Health
-              <Badge
-                variant={healthStatus === "healthy" ? "default" : "destructive"}
-                className="ml-2 bg-primary text-primary-foreground"
-              >
-                {healthStatus === "checking" ? "..." : healthStatus}
-              </Badge>
-            </Button>
-
-            <Button
-              variant="outline"
-              size="sm"
               onClick={endSession}
               className="bg-card border-border text-card-foreground hover:bg-destructive/20 hover:border-destructive"
             >
               <LogOut className="mr-2 h-4 w-4" />
-              End Session
+              End
             </Button>
           </div>
         </div>
@@ -291,74 +331,61 @@ export default function ResumeChatPage() {
 
               return (
                 <div key={message.id}>
-                  <div className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
-                    <div
-                      className={`flex items-start space-x-3 max-w-[80%] ${message.role === "user" ? "flex-row-reverse space-x-reverse" : ""}`}
-                    >
-                      <div
-                        className={`w-8 h-8 rounded-full flex items-center justify-center shadow-sm ${
-                          message.role === "user"
-                            ? "bg-primary text-primary-foreground"
-                            : "bg-card text-card-foreground"
-                        }`}
-                      >
-                        {message.role === "user" ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
-                      </div>
-                      <div
-                        className={`rounded-lg p-4 shadow-sm ${
-                          message.role === "user"
-                            ? "bg-primary text-primary-foreground"
-                            : "bg-card text-card-foreground border border-border"
-                        }`}
-                      >
-                        <div className="prose prose-sm max-w-none">
-                          {message.role === "user" ? (
+                  {message.role === "user" ? (
+                    <div className="flex justify-end">
+                      <div className="max-w-[80%]">
+                        <div className="rounded-lg p-4 shadow-sm bg-primary text-primary-foreground">
+                          <div className="prose prose-sm max-w-none">
                             <p className="mb-0 leading-relaxed">{content}</p>
-                          ) : (
-                            <ReactMarkdown
-                              className="prose prose-sm max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
-                              components={{
-                                h1: ({ children }) => (
-                                  <h1 className="text-lg font-bold mb-2 text-card-foreground">{children}</h1>
-                                ),
-                                h2: ({ children }) => (
-                                  <h2 className="text-base font-semibold mb-2 text-card-foreground">{children}</h2>
-                                ),
-                                h3: ({ children }) => (
-                                  <h3 className="text-sm font-semibold mb-1 text-card-foreground">{children}</h3>
-                                ),
-                                p: ({ children }) => (
-                                  <p className="mb-2 last:mb-0 leading-relaxed text-secondary-foreground">{children}</p>
-                                ),
-                                ul: ({ children }) => <ul className="mb-2 last:mb-0 pl-4 space-y-1">{children}</ul>,
-                                li: ({ children }) => <li className="text-secondary-foreground">{children}</li>,
-                                a: ({ children, href }) => (
-                                  <a
-                                    href={href}
-                                    className="text-primary hover:underline"
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                  >
-                                    {children}
-                                  </a>
-                                ),
-                                strong: ({ children }) => (
-                                  <strong className="font-semibold text-card-foreground">{children}</strong>
-                                ),
-                              }}
-                            >
-                              {content}
-                            </ReactMarkdown>
-                          )}
-                        </div>
-                        <div
-                          className={`text-xs mt-2 ${message.role === "user" ? "text-primary-foreground/70" : "text-muted-foreground"}`}
-                        >
-                          {message.timestamp.toLocaleTimeString()}
+                          </div>
+                          <div className="text-xs mt-2 text-primary-foreground/70">
+                            {message.timestamp.toLocaleTimeString()}
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
+                  ) : (
+                    <div>
+                      <div className="prose prose-sm max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+                        <ReactMarkdown
+                          components={{
+                          h1: ({ children }) => (
+                            <h1 className="text-lg font-bold mb-2 text-card-foreground">{children}</h1>
+                          ),
+                          h2: ({ children }) => (
+                            <h2 className="text-base font-semibold mb-2 text-card-foreground">{children}</h2>
+                          ),
+                          h3: ({ children }) => (
+                            <h3 className="text-sm font-semibold mb-1 text-card-foreground">{children}</h3>
+                          ),
+                          p: ({ children }) => (
+                            <p className="mb-2 last:mb-0 leading-relaxed text-secondary-foreground">{children}</p>
+                          ),
+                          ul: ({ children }) => <ul className="mb-2 last:mb-0 pl-4 space-y-1">{children}</ul>,
+                          li: ({ children }) => <li className="text-secondary-foreground">{children}</li>,
+                          a: ({ children, href }) => (
+                            <a
+                              href={href}
+                              className="text-primary hover:underline"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              {children}
+                            </a>
+                          ),
+                          strong: ({ children }) => (
+                            <strong className="font-semibold text-card-foreground">{children}</strong>
+                          ),
+                        }}
+                        >
+                          {content}
+                        </ReactMarkdown>
+                      </div>
+                      <div className="text-xs mt-2 text-muted-foreground">
+                        {message.timestamp.toLocaleTimeString()}
+                      </div>
+                    </div>
+                  )}
 
                   {insights.length > 0 && (
                     <div className="mt-4 ml-11">
@@ -402,7 +429,7 @@ export default function ResumeChatPage() {
         <div className="p-4 border-t border-border">
           <div className="flex space-x-3">
             <Input
-              placeholder="Ask about your career path, skills, or opportunities..."
+              placeholder="Explore roles, skills, or growth..."
               value={currentMessage}
               onChange={(e) => setCurrentMessage(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendMessage()}

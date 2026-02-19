@@ -13,6 +13,7 @@ export const metadata: Metadata = {
   generator: "v0.app",
   keywords: ["AI", "career", "assistant", "LinkedIn", "career guidance", "professional development"],
   authors: [{ name: "AI Career Assistant" }],
+  viewport: "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover",
   openGraph: {
     title: "AI Career Assistant",
     description: "Get personalized career guidance powered by advanced AI analysis",
